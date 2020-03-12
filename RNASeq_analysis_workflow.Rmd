@@ -1,0 +1,711 @@
+---
+title: "RNA-Seq"
+author: "Sadiq Alhasan"
+date: "12/15/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+needed_packages <- c("ggplot2","tidyverse" ,"recount","GenomicRanges","limma","edgeR","DESeq2",
+                     "regionReport","clusterProfiler","org.Hs.eg.db","gplots","derfinder"
+                     ,"rtracklayer","GenomicFeatures","bumphunter","derfinderPlot","sessioninfo",
+                     "pheatmap","PoiClaClu","ggbeeswarm","apeglm","genefilter",
+                     "AnnotationDbi","org.Hs.eg.db","sva","ReactomePA","stringr","RColorBrewer")
+missing.packages <- needed_packages[!(needed_packages %in% installed.packages()[,"Package"])]
+if(length(missing.packages)) {
+  install.packages(missing.packages)}
+
+lapply(needed_packages, require,character.only=TRUE)
+
+```
+
+## Introduction 
+
+The data set used in this workflow is from an RNA-Seq experiment. There are 16 samples where all are of cell line HUDEP2 (Human Umbilical Cord Blood-Derived Erythroid Progenitor). 8 samples have wild-type genotype and 8 with knockout gene "ZBTB7A". ZBTB7A gene produces LRF transcription factor that represses the expression of fetal β-like globin in adult red blood cells.
+
+## Downloading the Data Set 
+
+The data set used in this workflow was downloaded from the recount2 ("https://jhubiostatistics.shinyapps.io/recount/") as a ranged summarized experiment. The accession code to this data set is "SRP066151". 
+
+```{r}
+
+## Download the data if it is not there
+if(!file.exists(file.path("SRP066151", "rse_gene.Rdata"))) {
+  download_study("SRP066151", type = "rse-gene")
+}
+
+# load the dataset 
+load(file.path("SRP066151", "rse_gene.Rdata"))
+```
+
+## Preprocessing 
+
+Two new columns were are added to the data set `rse_gene` colData. The first column is cell_type, which indicates the genotype of the samples (WT vs KO). The second column is cell_stage, which indicates the stage at which the cells "samples" were when RNA-Seq was performed (Early basophilic erythroblasts "EBE" vs Late basophilic erythroblasts "LBE").
+
+```{r}
+# create a new vector containing the cell type
+cell_type <- ifelse(grepl('WT', colData(rse_gene)$title), 'WT', 'KO')
+```
+
+
+```{r}
+# add cell_type as a factor to colData rse_gene
+colData(rse_gene)$cell_type <- as.factor(cell_type)
+```
+
+
+```{r}
+# re-level to set reference as the wild type
+relevel(rse_gene$cell_type, "WT")
+```
+
+```{r}
+# select the first 2 characteristics to for each sample
+char <- sapply(colData(rse_gene)$characteristics, "[", 1:2)
+```
+
+
+
+```{r}
+# extract the information desired
+char_split <- sapply(strsplit(char, ": "), "[", 2)
+```
+
+
+```{r}
+# combine the 2 characteristics to for each sample in one line
+# save results as new_cell_stage
+new_cell_stage <- matrix(ncol = 1, nrow = 16)
+for ( i in 1:length(colnames(rse_gene)) ){
+  position <- seq(1,31,2)
+  new_cell_stage[i] <- rbind(paste0(char_split[position[i]]," ",char_split[(position+1)[i]]))
+  if (i < length(char_split)) {
+    i <- 1 + i
+  }
+  
+}
+```
+
+
+```{r}
+#check if new_cell_stage has the correct output vlaues
+new_cell_stage
+```
+
+```{r}
+# convert new_cell_stage to factors as cell_stage
+cell_stage <- factor(new_cell_stage)
+```
+
+
+```{r}
+# check cell_stage values 
+cell_stage
+```
+
+```{r}
+#rename the factors
+
+levels(cell_stage)[levels(cell_stage)=="Late basophilic erythroblasts EDM-II doxycycline+ (Day5)"] <- "LBE"
+
+levels(cell_stage)[levels(cell_stage)=="Early basophilic erythroblasts SFEM doxycycline+ (Day0)"] <- "EBE"
+
+# and check levels
+levels(cell_stage)
+```
+
+
+```{r}
+# add back to colData of rse_gene
+rse_gene$cell_stage <- cell_stage
+```
+
+
+```{r}
+# reset levels
+relevel(rse_gene$cell_stage, "EBE")
+```
+
+
+```{r}
+# check if the new column (cell_stage) is added 
+colnames(colData(rse_gene))
+rse_gene$cell_stage
+```
+
+```{r}
+# view the two cloumns side by side to check that the have the 
+# correct values/order (cell_stage vs characteristics)
+colData(rse_gene)[, c("cell_stage", "characteristics")]
+
+```
+
+## Viewing the Data
+
+```{r}
+# Checking the dimensions (number of rows and columns)
+dim(rse_gene)
+
+```
+
+```{r}
+# viewing the table containing the data about the samples
+colData(rse_gene)
+```
+
+```{r}
+# viewing the table containing the data about the genes
+
+rowRanges(rse_gene)
+```
+
+```{r}
+# view the assay names 
+
+assayNames(rse_gene)
+```
+
+```{r}
+# viewing the table containing the data about the counts "count table"
+
+head(assay(rse_gene))
+```
+
+
+
+## Data Scaling
+The library size "read counts" is adjusted to 40 million reads. 
+
+```{r}
+# using scale_counts to re-scale counts to 40 million reads
+rse_scaled <- scale_counts(rse_gene, round = TRUE)
+
+```
+
+```{r}
+# viewing names of columns in colData 
+colnames(colData(rse_scaled))
+```
+
+
+```{r}
+# checking the sum of columns of counts is 40 million or less
+summary(colSums(assay(rse_scaled))) / 1e6
+```
+
+
+## The Design Formula
+
+Here a DESeqDataSet object is constructed where the "design formula" is specified as (~ cell_type) . Meaning that to look for significant differences in gene expression between cells of different type (WT vs KO).
+```{r}
+## Specify design and switch to DESeq2 format
+dds <- DESeqDataSet(rse_scaled, design = ~ cell_type)
+```
+
+
+## Pre-filtering the Dataset
+
+skipped section 
+```{r}
+# Viewing the number of rows in dds (number of genes)
+#nrow(dds)
+```
+
+```{r}
+# Finding genes with that has more than 1 read count total. Stroing that in keep
+#keep <- rowSums(counts(dds)) > 1
+```
+
+```{r}
+# Subsetting dds by only selecting genes in keep and overwriting dds with keep
+#dds <- dds[keep,]
+# Checking the new number number of genes in dds 
+#nrow(dds)
+```
+
+## Data Transformation/Exploration
+
+performing vst "variance stabilizing transformation" on the raw data and saving it to vsd. This is one transformation that works well with negative binomial distributed data "RNA-Seq read counts". It account and stabilizes the variance across the means of the data. This make the data ready to be used in PCA and/or clustering analysis. vst is part of DESeq2 package. blind = FALSE, means that design formula is not taken into account when performing the transformation.
+
+```{r}
+# performing vst "variance stabilizing transformation" on the raw data and saving it to vsd
+vsd <- vst(dds, blind = FALSE)
+
+# view vsd
+head(vsd)
+```
+### PCA Plot
+
+Principal components analysis plot via plotPCA. Here plotting vsd "normalized data by vst" to show the two most components that are responsible for the most variance between the samples. On the x-axis is the first component which accounts for 48% of the variance and on the y-axis the second component which accounts for 36% of the variance. The data is grouped by `cell type` and by `cell stage` as specified by "intgroup". The plot shows that the group with wildtype `WT` genotype clustered to the right side while the other group with knockout genes `KO` clustered to the left. There is also some separation between groups of cell stage, `EBE` group clustered to the top while `LBE` clustered to the bottom.
+
+```{r}
+# make PCA plot of vsd 
+plotPCA(vsd, intgroup = c("cell_type","cell_stage"))
+```
+
+
+```{r}
+# calculate sample to sample distance of vsd and storing the results in sampleDists
+sampleDists <- dist(t(assay(vsd)))
+sampleDists
+```
+
+Here sampleDists is converted to a matrix and saved as sampleDistMatrix. Row names are assigned as the "cell type - cell stage". The column names are removed and colors is specified as green from the package RColorBrewer. 
+
+```{r}
+# create sample matrix 
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( vsd$cell_type, vsd$cell_stage, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Greens")) )(255)
+
+```
+
+### Heatmap Plot
+
+Heatmap plotting `sampleDists` on both axes. The darker the green squares are, the more similar the samples are from each other "shorter distances between the 2 samples". The clustering on top and on the left of the graph along with the color intensity show that each 2 samples in a row are technical replicates. Also, the first two samples appear to be more different than the other samples. Overall, the heatmap shows three levels of clustering, from strongest to weakest: 1)technical replicates samples, 2) samples of same cell type, 3)samples of same cell stage.
+
+
+```{r}
+# make a heatmap graph of the sample matrix showing sample distances on both axes
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+Calculate poisson distance for the samples and saving results in poisd. Then creating a matrix of the distances results and saving it as samplePoisDistMatrix. Then, the row names are assigned as the "cell type - cell stage". The column names are removed and colors is specified as green from the package RColorBrewer. 
+
+```{r}
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$cell_type, dds$cell_stage, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+
+```
+
+Heatmap plotting `poisd$dd` on both axes. The darker the green squares are, the more similar the samples are from each other "shorter distances between the 2 samples". The clustering on top and on the left of the graph along with the color intensity show that each 2 samples in a row are technical replicates. Also, the third and fourth samples appear to be more different than the other samples. Overall, the heatmap shows three levels of clustering, from strongest to weakest: 1)technical replicates samples, 2) samples of same cell stage, 3)samples of same cell type
+
+```{r}
+# create heatmap plot of poisd showing sample distances on both axes
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+
+## Differential Expression Analysis
+
+Using DESeq function to do the differential expression on dds. DESeq perform estimation of size factors and estimation of dispersion on the raw data. It also perform a negative binomial generalized linear model fitting for the coefficients and Wald statistics. 
+
+```{r}
+dds <- DESeq(dds)
+
+```
+```{r}
+# view the information about the genes 
+rowRanges(dds)
+```
+
+
+```{r}
+# view the assay names 
+assayNames(dds)
+
+```
+
+```{r}
+# view the information about counts per gene for each sample "the count table"
+colData(dds)
+```
+
+
+
+## Build results tables
+
+
+Using the results function to get the values of the differential expression analysis and store it in res. The results compare the gene expression level of samples with wildtype genotype "WT" to the samples with "KO". The rows in the output of res represent the genes "one row per gene". The first column "baseMean" represents the normalized count of reads across all 8 samples. The second column "log2FoldChange" represents the difference in expression between the two groups of cell type as specified in the design formula. The third column "lfcSE" represents the standard error for the uncertainty of log2FoldChange. The fourth column "stat" represents the value for the Wald statistics, wich is another way to measure uncertainty. The fifth column "pvalue" represents the significance of the log2FoldChange. The sixth column "padj" represents the adjusted p-value with benjamini hochberg method "FDR correction" to minimize false positives. 
+
+```{r}
+# store results of DESeq in res
+res <- results(dds)
+# view results
+head(res)
+```
+
+```{r}
+# view res columns metadata
+mcols(res, use.names = TRUE)
+```
+
+
+```{r}
+# viewing the summary of the results table
+summary(res)
+```
+
+
+```{r}
+# creating another results table with lower alpha value at 0.05
+res.05 <- results(dds, alpha = 0.05)
+table(res.05$padj < 0.05)
+```
+
+
+```{r}
+# creating another results table with higher lfcThreshold (value at 1)
+resLFC1 <- results(dds, lfcThreshold=1)
+table(resLFC1$padj < 0.1)
+```
+
+## Multiple testing 
+
+The goal here is to limit false positive genes to be identified as significant (differentially expressed)
+
+```{r}
+# Summing the number of genes with p-value less than 0.05. The sum is 6662 genes.
+
+sum(res$pvalue < 0.05, na.rm=TRUE)
+```
+
+
+```{r}
+#Summing the number of genes with any reported p-value "not NA". 47399 genes were included. 
+
+sum(!is.na(res$pvalue))
+```
+
+```{r}
+# Summing the number of genes with adjusted p-value less than 0.1 "10% FDR". The sum is 3886 genes. 
+
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+Selecting the significant genes with adjusted p-value less than 0.1 and storing them in resSig. Looking at the top 6 down regulated genes by ordering the genes from the lowest log2FoldChange value.
+
+
+```{r}
+# results saved as resSig
+resSig <- subset(res, padj < 0.1)
+head(resSig[ order(resSig$log2FoldChange), ])
+```
+
+Here looking at the top 6 up-regulated genes by ordering the genes from the highest log2FoldChange value.
+```{r}
+head(resSig[ order(resSig$log2FoldChange, decreasing = TRUE), ])
+```
+
+
+
+## Plotting results 
+
+Here plotting the results for the most significant gene and grouping the results by cell_type and cell_stage. The plot shows separation based on cell_type, where the normalized count for WT is above 500 and below 200 for KO.
+
+```{r}
+# gene with the lowest padj value
+topGene <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene = topGene, intgroup=c("cell_type","cell_stage"))
+```
+
+Here plotting the results for the most significant gene and grouping the results by cell_type only. As in previous plot, this plot shows separation based on cell_type.
+
+```{r}
+plotCounts(dds, gene = topGene, intgroup="cell_type")
+
+```
+
+Creating an MA plot, which show the log2 fold change value for each gene. Also, identifying topGene (gene with the lowest padj value) on the plot. 
+
+```{r, warning=FALSE}
+# MA plot with most significant gene 
+res.MA <- lfcShrink(dds, coef="cell_type_WT_vs_KO", type="apeglm")
+plotMA(res.MA, ylim = c(-5, 5))
+# plot with most significant gene 
+topGene <- rownames(res.MA)[which.min(res.MA$padj)]
+with(res.MA[topGene, ], {
+  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+})
+```
+### Gene Clustering 
+
+Plotting the top 20 most variable genes are selected from vsd. This is achieved by using rowVars function form genefilter package, which calculates the variance for each row "gene" across samples. Then the genes are ordered from the most to least variable. The top 20 row numbers are stored in topVarGenes.
+
+Then creating the heatmap with the results. The rows represent the genes while the columns represent the samples. The two bars at the top of the heatmap represent cell type and cell stage for each sample.
+All samples appear to cluster by cell type. With the exception to the top three genes in the plot, all the other genes are up-regulated for cell type KO in right side and down-regulated for cell type WT in the left side. Gene ENSG00000069011.15 has the opposite expression. With in each cell type, samples with the same cell stage cluster together. 
+
+
+```{r}
+# gene clustering heatmap of a subset of the most highly variable genes
+
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+
+mat  <- assay(vsd)[ topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("cell_stage","cell_type")])
+pheatmap(mat, annotation_col = anno)
+```
+
+##  Annotating and exporting results
+
+Viewing the columns of org.Hs.eg.db package, which is specific for humans. Information from these columns can be retrieved and added to the results of the differential expression `res`. Adding gene SYMBOLs and ENTREZIDs. 
+
+```{r}
+# adding annotaion to res table
+columns(org.Hs.eg.db)
+
+ens.str <- substr(rownames(res), 1, 15)
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+Adding gene SYMBOLs and ENTREZIDs to resSig table. resSig is a subset of res with significant genes that have adjusted p-value less than 0.1
+
+```{r}
+# adding annotaion to resSig table
+
+ens.str2 <- substr(rownames(resSig), 1, 15)
+resSig$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str2,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+
+resSig$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str2,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+```
+
+Saving gene SYMBOLs and ENTREZIDs for all the genes in genesSymbols and genesEntrez
+
+```{r}
+# Saving annotations for genes symbols and IDs
+# all genes names
+
+ens.str.dds <- substr(rownames(dds), 1, 15)
+genesSymbols <- mapIds(org.Hs.eg.db,
+                      keys=ens.str.dds,
+                      column="SYMBOL",
+                      keytype="ENSEMBL",
+                      multiVals="first")
+
+# all genes IDs
+genesEntrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str.dds,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+## Exporting results
+
+Ordering resSig table by padj value
+
+```{r}
+# reorder table by padj value
+resSigOrdered <- resSig[order(resSig$padj), ]
+head(resSigOrdered)
+
+```
+
+
+One way to save the results is by subsetting the desire number of rows then saving the results into a new variable. Here the top 100 genes with lowest p-values are saved in resOrderedDF "a data frame". Then from the data frame a CSV file is created "results.csv".
+
+```{r}
+
+resSigOrderedDF <- as.data.frame(resSigOrdered)[1:100, ]
+write.csv(resSigOrderedDF, file = "results.csv")
+
+```
+
+Another way to export is by creating an HTML file with the results. Here the data frame is put in htmlRep, an HTML document that was created with HTMLReport function. htmlRep then be viewed in a web browser for more interactivity.
+
+```{r}
+
+library("ReportingTools")
+htmlRep <- HTMLReport(shortName="report", title="My report",
+                      reportDirectory="./report")
+publish(resSigOrderedDF, htmlRep)
+url <- finish(htmlRep)
+browseURL(url)
+
+```
+
+## surrogate variable analysis
+
+The goal of surrogate variable analysis is to detect unknown and unwanted variation that may affect gene expression results. 
+
+The following line retrieve the read counts from dds and normalizing them argument normalized = TRUE. The results is stored in dat. Then, evaluating if the row mean for each gene is greater than 1. The results is stored in idx. After that subsetting the genes "rows" with row mean greater than 1. Results is stored back in dat. The creating two models, one indicating cell type status and intercept for each sample and another indicating only the intercepts. Then using svaseq to indicate 2 surrogate variables per sample. 
+
+```{r}
+dat  <- counts(dds, normalized = TRUE)
+idx  <- rowMeans(dat) > 1
+dat  <- dat[idx, ]
+mod  <- model.matrix(~ cell_type, colData(dds))
+mod0 <- model.matrix(~   1, colData(dds))
+svseq <- svaseq(dat, mod, mod0, n.sv = 2)
+svseq$sv
+```
+
+Plotting the 2 surrogate to show that cell_stage is the unknown factor that is affecting expression in samples.
+
+```{r}
+# plotting sva
+par(mfrow = c(2, 1), mar = c(3,5,3,1))
+for (i in 1:2) {
+  stripchart(svseq$sv[, i] ~ dds$cell_stage, vertical = TRUE, main = paste0("SV", i))
+  abline(h = 0)
+}
+
+```
+
+## pathway enrichment analysis
+
+Finding the pathways that are more representative in the genes in resSig than the rest of the genes.
+
+
+Here using reactome package to find the pathways. Using the ENTREZIDs of the genes as input. Also indicating pvalueCutoff = 0.05 and Benjamini and Hochberg false discovery test.
+```{r}
+reactome_enrich <- enrichPathway(gene = resSig$entrez ,
+                                 universe = res$entrez,
+                                
+                                 organism = "human",
+                                 pvalueCutoff = 0.05,
+                                 pAdjustMethod = "BH",
+                                 qvalueCutoff = 0.9,
+            
+                                 readable = TRUE)
+
+
+```
+
+The results show only one pathway. Rho GTPase cycle pathway.
+
+```{r}
+# Viewing the results
+head(as.data.frame(reactome_enrich))
+```
+Plotting the pathway. On the x-axis is the number of genes known to have this pathway. On the y-axis is the name of the pathway.
+
+```{r}
+barplot(reactome_enrich)
+```
+
+Here using another enrichGo of clusterProfiler package find the pathways. Argument are "MF" for subontologies, ENTREZIDs for gene data input, Benjamini and Hochberg for false discovery test and pvalueCutoff = 0.05. The results are 10 different pathways that are more representative in the genes in resSig than the rest of the genes.
+
+
+
+```{r}
+enrich_go <- enrichGO(
+     gene = resSig$entrez,
+     OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "MF",
+     pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.2,
+     universe = res$entrez)
+
+head(enrich_go)
+```
+
+Plotting the pathways with dotplot. The size of the dots indicates the number of genes represented in this pathway. The color for the p-adj value. Labels on y-axis with the names of the pathway, and x-axis with the gene ratio. 
+
+```{r}
+## Visualize enrichment results
+dotplot(enrich_go, font.size = 7)
+```
+Plotting the pathways with barplot. The number of genes on the x-axis and names of pathways on the y-axis. p-adj value indicated by color.
+
+```{r}
+barplot(enrich_go)
+```
+
+Using emapplot to see the connection between the pathways. All pathways appear to be equally connected.
+
+```{r}
+emapplot(enrich_go)
+```
+
+Here using another enrichGo of clusterProfiler package find the pathways same as previous one. The only difference is using the symbols as input for gene data. 
+
+```{r}
+enrich_go_symbol <- enrichGO(
+     gene = resSig$symbol,
+     OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "ALL",
+     pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.2,
+     universe = res$symbol)
+
+head(enrich_go_symbol)
+```
+
+Plotting the pathways with cnetplot where the genes are labeled by their symbols.
+
+```{r}
+cnetplot(enrich_go_symbol, categorySize="pvalue", showCategory = 10)
+```
+sessionInfo returns the version of R and a list of packages and their versions in ordered to keep record of what version are/were used.
+
+
+## Discussion/Results of Top Genes
+
+Top 3 most significant genes based on p-adj value 
+
+1) ARHGAP5: makes GTPase Activating Proteins or GAPs, which is one of 3 regulating classes of proteins of Rho GTPase cycle. GAPs are known to deactivate Rho GTPase cycle. This gene was up-regulated.
+
+2) TUBB4A: a gene when mutated is known to be associated with Hypomyelinating leukodystrophy-6, which is neurologic disorder. This gene was down-regulated.
+
+3) SCN2A: a gene when mutated is associated with a number of neurologic disorders autism and seizure disorders. This gene was down-regulated.
+
+```{r}
+head(resSigOrderedDF,3)
+```
+Top 3 most significant genes based on absolute log2FoldChange value 
+
+1) H19: a gene that produces a lncRNA. It is known to regulate IFG2 gene, which is a growth promoting gene. Mutated of this H19 is associated with unwanted cell growth and diseases like cancers and Beckwith-Wiedemann Syndrome. This gene was down-regulated.
+
+2) HIF3A: a gene that is activated in low oxygen environment. It is known to suppress expressions of growth genes. This gene was down-regulated.
+
+3) HCLS1: a gene that produces an antigen receptor signaling protein. This gene was up-regulated.
+
+
+```{r}
+head(arrange(resSigOrderedDF,desc(abs(log2FoldChange))),3)
+```
+
+
+```{r}
+sessionInfo()
+```
+
+## References
+
+Curiel, Julian, G Rodríguez Bey, A Takanohashi, M Bugiani, X Fu, N Wolf, R Schiffmann, et al. “TUBB4A Mutations Result in Specific Neuronal and Oligodendrocytic Defects That Closely Match Clinically Distinct Phenotypes.” Human Molecular Genetics 26, no. 22 (November 16, 2017): 4506–18. https://doi.org/10.1093/hmg/ddx338.
+
+Gabory, A., M.-A. Ripoche, T. Yoshimizu, and L. Dandolo. “The H19 Gene: Regulation and Function of a Non-Coding RNA.” Cytogenetic and Genome Research 113, no. 1–4 (2006): 188–93. https://doi.org/10.1159/000090831.
+
+Hall, Alan. “Rho Family GTPases.” Biochemical Society Transactions 40, no. 6 (November 21, 2012): 1378–82. https://doi.org/10.1042/BST20120103.
+
+Kearney, J.A, N.W Plummer, M.R Smith, J Kapur, T.R Cummins, S.G Waxman, A.L Goldin, and M.H Meisler. “A Gain-of-Function Mutation in the Sodium Channel Gene Scn2a Results in Seizures and Behavioral Abnormalities.” Neuroscience 102, no. 2 (January 15, 2001): 307–17. https://doi.org/10.1016/S0306-4522(00)00479-6.
+
+Love, M, S Anders, V Kim, and W Huber. RNA-Seq Workflow: Gene-Level Exploratory Analysis and Differential Expression, 2019. https://www.bioconductor.org/packages/devel/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html.
+
+Masuda, T., X. Wang, M. Maeda, M. C. Canver, F. Sher, A. P. W. Funnell, C. Fisher, et al. “Transcription Factors LRF and BCL11A Independently Repress Expression of Fetal Hemoglobin.” Science 351, no. 6270 (January 15, 2016): 285–89. https://doi.org/10.1126/science.aad3312.
+
+Semenza, Gregg L. “Hypoxia-Inducible Factors: Mediators of Cancer Progression and Targets for Cancer Therapy.” Trends in Pharmacological Sciences 33, no. 4 (April 2012): 207–14. https://doi.org/10.1016/j.tips.2012.01.005.
+
+Skokowa, Julia, Maxim Klimiankou, Olga Klimenkova, Dan Lan, Kshama Gupta, Kais Hussein, Esteban Carrizosa, et al. “Interactions among HCLS1, HAX1 and LEF-1 Proteins Are Essential for G-CSF–Triggered Granulopoiesis.” Nature Medicine 18, no. 10 (October 1, 2012): 1550–59. https://doi.org/10.1038/nm.2958.
