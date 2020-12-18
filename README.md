@@ -1,3 +1,12 @@
-# RNA-Seq-Analysis
+# RNA-Seq Differential Expression Analysis
+- Utilized publicly available RNA-Seq data from GTEx via recount2 to perform a differential expression analysis on potential gene therapy for sickle cell disease
+- Found significant differences of expression between the groups, including several off-target genes
+- The data set consists of 16 samples where all are of cell line HUDEP2 (Human Umbilical Cord Blood-Derived Erythroid Progenitor)
+  - 8 samples have wild-type genotype
+  - 8 with knockout "ZBTB7A gene
+ZBTB7A gene produces an LRF transcription factor that represses fetal β-like globin expression in adult red blood cells.
+- The data set was retrieved from https://jhubiostatistics.shinyapps.io/recount/ with accession code SRP066151.
 
-The data set used in this workflow is from an RNA-Seq experiment. There are 16 samples where all are of cell line HUDEP2 (Human Umbilical Cord Blood-Derived Erythroid Progenitor). 8 samples have wild-type genotype and 8 with knockout gene "ZBTB7A". ZBTB7A gene produces LRF transcription factor that represses the expression of fetal β-like globin in adult red blood cells.
+![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/rna_seq_DEA.png)
+
+
