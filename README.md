@@ -4,7 +4,7 @@
 - The data set consists of 16 samples where all are of cell line HUDEP2 (Human Umbilical Cord Blood-Derived Erythroid Progenitor)
   - 8 samples have wild-type genotype
   - 8 with knockout "ZBTB7A gene
-ZBTB7A gene produces an LRF transcription factor that represses fetal β-like globin expression in adult red blood cells.
+- ZBTB7A gene produces an LRF transcription factor that represses fetal β-like globin expression in adult red blood cells.
 - The data set was retrieved from https://jhubiostatistics.shinyapps.io/recount/ with accession code SRP066151.
 
 ![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/rna_seq_DEA.png)
