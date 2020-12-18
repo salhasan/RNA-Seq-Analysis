@@ -7,6 +7,10 @@
 - ZBTB7A gene produces an LRF transcription factor that represses fetal β-like globin expression in adult red blood cells.
 - The data set was retrieved from https://jhubiostatistics.shinyapps.io/recount/ with accession code SRP066151.
 
-![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/rna_seq_DEA.png)
+![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/images/rna_seq_DEA.png)
 
+![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/images/rna_seq_DEA_2.png)
 
+![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/images/rna_seq_DEA_3.png)
+
+![alt text](https://github.com/salhasan/RNA-Seq-Analysis/blob/master/images/rna_seq_DEA_4.png)
